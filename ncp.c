@@ -1,17 +1,14 @@
 #include "net_include.h"
 
-void sendFileName(char *file_name, char *comp_name);
+void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_rate_percent);
 
 int main(int argc, char const *argv[])
 {
   int loss_rate_percent;
-  char source_file_name[80];
-  char dest_file_name[80];
-  char comp_name[80];
+  char source_file_name[NAME_LENGTH];
+  char dest_file_name[NAME_LENGTH];
+  char comp_name[NAME_LENGTH];
   char *find_at_symbol_ptr;
-
-  FILE *fr;
-  int nread;
 
   if (argc != 4) {
     printf("Usage: ncp <loss_rate_percent> <source_file_name> <dest_file_name>@<comp_name>\n");
@@ -29,15 +26,9 @@ int main(int argc, char const *argv[])
   strcpy(dest_file_name, argv[3]);
   strcpy(comp_name, find_at_symbol_ptr + 1);
 
-  sendFileName(dest_file_name, comp_name);
+  sendFile(source_file_name, dest_file_name, comp_name, loss_rate_percent);
 
-  /* Open the source file for reading */
-  if((fr = fopen(source_file_name, "r")) == NULL) {
-    perror("fopen");
-    exit(0);
-  }
-
-  printf("%d %s %s %s\n", loss_rate_percent, source_file_name, dest_file_name, comp_name);
+  printf("%d %s %s@%s\n", loss_rate_percent, source_file_name, dest_file_name, comp_name);
   return 0;
 }
 
@@ -54,12 +45,12 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     int                   from_ip;
     int                   ss,sr;
     fd_set                mask;
-    fd_set                dummy_mask,temp_mask;
-    int                   bytes;
-    int                   num;
-    char                  mess_buf[MAX_MESS_LEN];
-    char                  input_buf[80];
-    struct timeval        timeout;
+    fd_set                dummy_mask;
+
+    /* Open file for reading */
+    FILE *fr;
+    int nread;
+    char input_buf[BUF_SIZE];
 
     sr = socket(AF_INET, SOCK_DGRAM, 0);  /* socket for receiving (udp) */
     if (sr<0) {
@@ -99,4 +90,24 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     FD_ZERO( &dummy_mask );
     FD_SET( sr, &mask );
     FD_SET( (long)0, &mask ); /* stdin */
+
+    /* Open the source file for reading */
+    if((fr = fopen(file_name, "r")) == NULL) {
+      perror("fopen");
+      exit(0);
+    }
+    nread = fread(input_buf, 1, BUF_SIZE, fr);
+    if (nread > 0) {
+      sendto(ss, input_buf, strlen(input_buf), 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
+    }
+    if (nread < BUF_SIZE) {
+      /* Did we reach the EOF? */
+      if(feof(fr)) {
+        printf("Finished reading.\n");
+      }
+      else {
+        printf("An error occurred...\n");
+        exit(0);
+      }
+    }
 }

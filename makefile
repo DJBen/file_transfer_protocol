@@ -2,7 +2,10 @@ CC=gcc
 
 CFLAGS = -ansi -c -Wall -pedantic
 
-all: ucast net_client net_server myip file_copy ncp
+all: ucast net_client net_server myip file_copy ncp rcv
+
+rcv: rcv.o
+			$(CC) -o rcv rcv.o
 
 ncp: ncp.o
 			$(CC) -o ncp ncp.o
@@ -30,6 +33,7 @@ clean:
 	rm myip
 	rm file_copy
 	rm ncp
+	rm rcv
 
 %.o:    %.c
 	$(CC) $(CFLAGS) $*.c

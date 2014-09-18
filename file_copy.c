@@ -32,7 +32,7 @@ int main(int argc, char **argv)
    * BUF_SIZE bytes at a time.*/
   for(;;) {
 
-    /* Read in a chunk of t`he file */
+    /* Read in a chunk of the file */
     nread = fread(buf, 1, BUF_SIZE, fr);
 
     /* If there is something to write, write it */

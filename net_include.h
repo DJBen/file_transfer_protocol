@@ -15,6 +15,8 @@
 #define PORT	     10180
 
 #define MAX_MESS_LEN 8192
+#define BUF_SIZE 1400
+#define NAME_LENGTH 80
 
 typedef char packet_type;
 
