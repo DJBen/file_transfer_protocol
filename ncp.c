@@ -1,6 +1,8 @@
 #include "net_include.h"
 
+int gethostname(char*,size_t);
 void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_rate_percent);
+void readFeedbackNacks(FEEDBACK *feedback, int **nacks);
 
 int main(int argc, char const *argv[])
 {
@@ -39,18 +41,30 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     socklen_t             from_len;
     struct hostent        h_ent;
     struct hostent        *p_h_ent;
-    char                  host_name[NAME_LENGTH] = {'\0'};
     char                  my_name[NAME_LENGTH] = {'\0'};
     int                   host_num;
     int                   from_ip;
     int                   ss,sr;
     fd_set                mask;
-    fd_set                dummy_mask;
+    fd_set                dummy_mask,temp_mask;
+    struct timeval        timeout;
+    int                   num;
+    int i;
 
     /* Open file for reading */
-    FILE *fr;
+    FILE *fr = NULL;
     int nread;
-    char input_buf[BUF_SIZE];
+
+    /* Packets and feedback */
+    PACKET *currentPacket = NULL;
+    int packetSize;
+    FEEDBACK *currentFeedback = NULL;
+    int feedbackSize;
+    int *nacks;
+    int packetIndex;
+
+    nacks = malloc(sizeof(int));
+    packetIndex = 0;
 
     sr = socket(AF_INET, SOCK_DGRAM, 0);  /* socket for receiving (udp) */
     if (sr<0) {
@@ -73,6 +87,8 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
         exit(1);
     }
 
+    gethostname(my_name, NAME_LENGTH);
+
     p_h_ent = gethostbyname(comp_name);
     if ( p_h_ent == NULL ) {
         printf("Ucast: gethostbyname error.\n");
@@ -89,25 +105,87 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     FD_ZERO( &mask );
     FD_ZERO( &dummy_mask );
     FD_SET( sr, &mask );
-    FD_SET( (long)0, &mask ); /* stdin */
 
-    /* Open the source file for reading */
-    if((fr = fopen(file_name, "r")) == NULL) {
-      perror("fopen");
-      exit(0);
+    /* Send metadata packet first. */
+    packetSize = sizeof(PACKET) + sizeof(char) * NAME_LENGTH;
+    currentPacket = malloc(packetSize);
+    currentPacket->type = packet_type_metadata;
+    currentPacket->completed = false;
+    currentPacket->index = -1;
+    strcpy(currentPacket->data, dest_file_name);
+    currentPacket->data_size = sizeof(char) * strlen(dest_file_name);
+    sendto(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
+
+    for(;;)
+    {
+        temp_mask = mask;
+        timeout.tv_sec = 1; /* original value was 10 */
+        timeout.tv_usec = 0;
+        num = select( FD_SETSIZE, &temp_mask, &dummy_mask, &dummy_mask, &timeout);
+        if (num > 0) {
+            if ( FD_ISSET( sr, &temp_mask) ) {
+                from_len = sizeof(from_addr);
+                if (currentFeedback) free(currentFeedback);
+                currentFeedback = calloc(1, sizeof(FEEDBACK) + sizeof(int) * WINDOW_SIZE);
+                feedbackSize = recvfrom( sr, currentFeedback, sizeof(currentFeedback) + sizeof(int) * WINDOW_SIZE, 0, (struct sockaddr *)&from_addr, &from_len);
+                from_ip = from_addr.sin_addr.s_addr;
+                printf( "Received from %d.%d.%d.%d - (%d, %ld)\n",
+                (htonl(from_ip) & 0xff000000)>>24,
+                (htonl(from_ip) & 0x00ff0000)>>16,
+                (htonl(from_ip) & 0x0000ff00)>>8,
+                (htonl(from_ip) & 0x000000ff), currentFeedback->good_index,
+                currentFeedback->nack_count);
+
+                if (currentFeedback->good_index == -1) {
+                    /* Metadata feedback: ready for transmission */
+                    /* Open the source file for reading */
+                    if((fr = fopen(file_name, "rb")) == NULL) {
+                      perror("fopen");
+                      exit(0);
+                    }
+                    printf("Metadata sent.\n");
+                } else {
+                    readFeedbackNacks(currentFeedback, &nacks);
+                    for (i = 0; i < currentFeedback->nack_count; i++) {
+                        printf("%d, ", nacks[i]);
+                    }
+                    printf("\n");
+                }
+            }
+        }
+        if (fr == NULL) continue;
+        packetSize = sizeof(PACKET) + BUF_SIZE;
+        currentPacket = malloc(packetSize);
+        currentPacket->type = packet_type_normal;
+        currentPacket->completed = false;
+        currentPacket->index = packetIndex++;
+        currentPacket->data_size = BUF_SIZE;
+        nread = fread(currentPacket->data, sizeof(unsigned char), BUF_SIZE, fr);
+        if (nread > 0) {
+            if (nread < BUF_SIZE && feof(fr)) {
+                /* Did we reach the EOF? */
+                printf("Finished reading.\n");
+                currentPacket->completed = true;
+                fclose(fr);
+                sendto(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
+                /* free(currentPacket); */
+                break;
+            } else {
+                sendto(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
+            }
+        }
+        if (nread < BUF_SIZE && !feof(fr)) {
+            printf("An error occurred...\n");
+            exit(0);
+        }
     }
-    nread = fread(input_buf, 1, BUF_SIZE, fr);
-    if (nread > 0) {
-      sendto(ss, input_buf, strlen(input_buf), 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
-    }
-    if (nread < BUF_SIZE) {
-      /* Did we reach the EOF? */
-      if(feof(fr)) {
-        printf("Finished reading.\n");
-      }
-      else {
-        printf("An error occurred...\n");
-        exit(0);
-      }
+}
+
+void readFeedbackNacks(FEEDBACK *feedback, int **nacks) {
+    int i;
+    if (*nacks) free(*nacks);
+    (*nacks) = calloc(1, sizeof(int) * feedback->nack_count);
+    for (i = 0; i < feedback->nack_count; i++) {
+      *((*nacks) + i) = (int)*(feedback->nacks + i);
     }
 }

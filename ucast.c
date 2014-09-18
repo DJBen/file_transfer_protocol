@@ -85,7 +85,7 @@ int main()
 								(htonl(from_ip) & 0x00ff0000)>>16,
 								(htonl(from_ip) & 0x0000ff00)>>8,
 								(htonl(from_ip) & 0x000000ff),
-								mess_buf );
+								mess_buf);
 
             }else if( FD_ISSET(0, &temp_mask) ) {
                 bytes = read( 0, input_buf, sizeof(input_buf) );
@@ -94,7 +94,7 @@ int main()
                 sendto( ss, input_buf, strlen(input_buf), 0,
                     (struct sockaddr *)&send_addr, sizeof(send_addr) );
             }
-	} else {
+	   } else {
 		printf(".");
 		fflush(0);
         }
