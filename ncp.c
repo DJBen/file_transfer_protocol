@@ -30,7 +30,6 @@ int main(int argc, char const *argv[])
 
   sendFile(source_file_name, dest_file_name, comp_name, loss_rate_percent);
 
-  printf("%d %s %s@%s\n", loss_rate_percent, source_file_name, dest_file_name, comp_name);
   return 0;
 }
 
@@ -56,6 +55,7 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     int nread;
 
     /* Packets and feedback */
+    unsigned char *temp_buf;
     PACKET *currentPacket = NULL;
     int packetSize;
     FEEDBACK *currentFeedback = NULL;
@@ -64,6 +64,7 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     int packetIndex;
 
     nacks = malloc(sizeof(int));
+    temp_buf = malloc(sizeof(unsigned char) * BUF_SIZE);
     packetIndex = 0;
 
     sr = socket(AF_INET, SOCK_DGRAM, 0);  /* socket for receiving (udp) */
@@ -154,13 +155,14 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
             }
         }
         if (fr == NULL) continue;
-        packetSize = sizeof(PACKET) + BUF_SIZE;
+        nread = fread(temp_buf, sizeof(unsigned char), BUF_SIZE, fr);
+        packetSize = sizeof(PACKET) + nread * sizeof(unsigned char);
         currentPacket = malloc(packetSize);
         currentPacket->type = packet_type_normal;
         currentPacket->completed = false;
         currentPacket->index = packetIndex++;
-        currentPacket->data_size = BUF_SIZE;
-        nread = fread(currentPacket->data, sizeof(unsigned char), BUF_SIZE, fr);
+        currentPacket->data_size = nread;
+        memcpy(currentPacket->data, temp_buf, nread * sizeof(unsigned char));
         if (nread > 0) {
             if (nread < BUF_SIZE && feof(fr)) {
                 /* Did we reach the EOF? */
@@ -168,10 +170,11 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
                 currentPacket->completed = true;
                 fclose(fr);
                 sendto(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
-                /* free(currentPacket); */
+                free(currentPacket);
                 break;
             } else {
                 sendto(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
+                free(currentPacket);
             }
         }
         if (nread < BUF_SIZE && !feof(fr)) {

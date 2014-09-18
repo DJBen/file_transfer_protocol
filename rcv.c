@@ -42,6 +42,7 @@ void receiveFile(int loss_rate_percent) {
     int i;
     PACKET *currentPacket = NULL;
     FEEDBACK *currentFeedback = NULL;
+    int send_result;
 
     sr = socket(AF_INET, SOCK_DGRAM, 0);  /* socket for receiving (udp) */
     if (sr<0) {
@@ -106,7 +107,7 @@ void receiveFile(int loss_rate_percent) {
                     feedbackSize = setFeedback(&currentFeedback, -1, NULL, 0);
 
                     from_addr.sin_port = htons(PORT);
-                    int send_result = sendto(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr));
+                    send_result = sendto(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr));
                     if (send_result == -1) {
                         printf("send metadata feedback error\n");
                         exit(1);
@@ -123,11 +124,17 @@ void receiveFile(int loss_rate_percent) {
                     }
                     printf("Packet %d received of size %ld.\n", currentPacket->index, currentPacket->data_size);
                     nwritten = fwrite(currentPacket->data, sizeof(unsigned char), currentPacket->data_size, fw);
+                    /* Send feedback */
+                    feedbackSize = setFeedback(&currentFeedback, 0, NULL, 0);
+                    from_addr.sin_port = htons(PORT);
+                    sendto(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr));
                     if (currentPacket->completed) {
                         fclose(fw);
-                        /* free(currentPacket); */
+                        free(currentPacket);
                         printf("File transfer completed.\n");
                         break;
+                    } else {
+                        free(currentPacket);
                     }
                 }
             }
