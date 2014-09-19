@@ -2,7 +2,7 @@
 
 void receiveFile(int loss_rate_percent);
 
-int setFeedback(FEEDBACK **feedback, int good_index, int* nacks, int nack_count);
+int setFeedback(FEEDBACK **feedback, int aru, int* nacks, int nack_count);
 
 int main(int argc, char const *argv[])
 {
@@ -43,6 +43,15 @@ void receiveFile(int loss_rate_percent) {
     PACKET *currentPacket = NULL;
     FEEDBACK *currentFeedback = NULL;
     int send_result;
+    PACKET **window;
+    int aru;
+    int temp_nacks[WINDOW_SIZE];
+    int temp_nack_size;
+    int new_aru;
+    bool completed;
+
+    window = calloc(WINDOW_SIZE, sizeof(PACKET *));
+    aru = -1;
 
     sr = socket(AF_INET, SOCK_DGRAM, 0);  /* socket for receiving (udp) */
     if (sr<0) {
@@ -72,11 +81,8 @@ void receiveFile(int loss_rate_percent) {
         if (num > 0) {
             if ( FD_ISSET( sr, &temp_mask) ) {
                 from_len = sizeof(from_addr);
-                if (currentPacket) {
-                    free(currentPacket);
-                }
                 packetSize = sizeof(PACKET) + sizeof(char) * BUF_SIZE;
-                currentPacket = calloc(1, packetSize);
+                currentPacket = malloc(packetSize);
                 bytes = recvfrom(sr, currentPacket, packetSize, 0,
                           (struct sockaddr *)&from_addr,
                           &from_len);
@@ -112,7 +118,8 @@ void receiveFile(int loss_rate_percent) {
                         printf("send metadata feedback error\n");
                         exit(1);
                     }
-                      /* Open or create the destination file for writing */
+
+                    /* Open or create the destination file for writing */
                     if((fw = fopen(dest_file_name, "wb")) == NULL) {
                         perror("fopen");
                         exit(0);
@@ -123,18 +130,47 @@ void receiveFile(int loss_rate_percent) {
                         exit(0);
                     }
                     printf("Packet %d received of size %ld.\n", currentPacket->index, currentPacket->data_size);
-                    nwritten = fwrite(currentPacket->data, sizeof(unsigned char), currentPacket->data_size, fw);
+
+                    /* Save packet to buffer, waiting for write operation */
+                    window[currentPacket->index % WINDOW_SIZE] = currentPacket;
+
+                    /* Increment new aru */
+                    new_aru = aru;
+                    for (i = aru + 1; i <= aru + WINDOW_SIZE; i++) {
+                        if (window[i % WINDOW_SIZE] == NULL) break;
+                        new_aru++;
+                    }
+
+                    /* Construct nacks */
+                    temp_nack_size = 0;
+                    for (i = new_aru + 1; i <= currentPacket->index; i++) {
+                        if (window[i % WINDOW_SIZE] == NULL) {
+                            temp_nacks[temp_nack_size++] = i;
+                        }
+                    }
+
                     /* Send feedback */
-                    feedbackSize = setFeedback(&currentFeedback, 0, NULL, 0);
+                    feedbackSize = setFeedback(&currentFeedback, new_aru, temp_nacks, temp_nack_size);
                     from_addr.sin_port = htons(PORT);
                     sendto(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr));
-                    if (currentPacket->completed) {
+                    completed = currentPacket->completed;
+
+                    /* Write packets up to new ARU to the disk and free these in the buffer */
+                    for (i = aru + 1; i <= new_aru; i++) {
+                        nwritten = fwrite(window[i % WINDOW_SIZE]->data, sizeof(unsigned char), window[i % WINDOW_SIZE]->data_size, fw);
+                        if (nwritten != window[i % WINDOW_SIZE]->data_size) {
+                            perror("fwrite error.");
+                            exit(0);
+                        }
+                        free(window[i % WINDOW_SIZE]);
+                        window[i % WINDOW_SIZE] = NULL;
+                    }
+                    aru = new_aru;
+
+                    if (completed) {
                         fclose(fw);
-                        free(currentPacket);
                         printf("File transfer completed.\n");
                         break;
-                    } else {
-                        free(currentPacket);
                     }
                 }
             }
@@ -144,14 +180,14 @@ void receiveFile(int loss_rate_percent) {
     }
 }
 
-int setFeedback(FEEDBACK **feedback, int good_index, int *nacks, int nack_count) {
+int setFeedback(FEEDBACK **feedback, int aru, int *nacks, int nack_count) {
     int feedbackSize;
     int i;
 
     feedbackSize = sizeof(FEEDBACK) + sizeof(int) * nack_count;
     if (*feedback) free(*feedback);
     (*feedback) = calloc(1, feedbackSize);
-    (*feedback)->good_index = good_index;
+    (*feedback)->aru = aru;
     (*feedback)->nack_count = nack_count;
     for (i = 0; i < nack_count; i++) {
         *((int *)(*feedback)->nacks + i) = nacks[i];

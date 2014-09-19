@@ -7,8 +7,8 @@ all: ucast net_client net_server myip file_copy ncp rcv
 rcv: rcv.o
 			$(CC) -o rcv rcv.o
 
-ncp: ncp.o
-			$(CC) -o ncp ncp.o
+ncp: ncp.o queue.o
+			$(CC) -o ncp ncp.o queue.o
 
 net_server: net_server.o
 	    $(CC) -o net_server net_server.o

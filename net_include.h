@@ -34,7 +34,14 @@ typedef struct
 
 typedef struct
 {
-  int good_index;
+  int aru;
   size_t nack_count;
   int nacks[1];
 } FEEDBACK;
+
+typedef struct
+{
+  PACKET *packet;
+  int packetSize;
+} PACKET_INFO;
+
