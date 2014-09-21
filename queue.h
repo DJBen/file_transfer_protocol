@@ -25,8 +25,11 @@ http://www.amazon.com/exec/obidos/ASIN/0387001638/thealgorithmrepo/
 
 */
 
+#ifndef QUEUE_
+#define QUEUE_
 
-#define QUEUESIZE       100
+#include "net_include.h"
+#define QUEUESIZE       WINDOW_SIZE
 
 typedef struct {
         int q[QUEUESIZE+1];		/* body of queue */
@@ -38,6 +41,9 @@ typedef struct {
 extern void init_queue(queue *q);
 extern void enqueue(queue *q, int x);
 extern int dequeue(queue *q);
-extern int empty(queue *q);
+extern bool empty(queue *q);
 extern void print_queue(queue *q);
+extern int queueContains(queue *q, int element);
+
+#endif
 

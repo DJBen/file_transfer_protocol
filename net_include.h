@@ -1,5 +1,8 @@
-#include <stdio.h>
+#ifndef NET_INCLUDE_
+#define NET_INCLUDE_
 
+#include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
@@ -18,24 +21,26 @@
 #define BUF_SIZE 1400
 #define NAME_LENGTH 80
 #define WINDOW_SIZE 100
-typedef char packet_type;
 
-packet_type packet_type_normal = 0;
-packet_type packet_type_metadata = 1;
+#define packet_type_normal 0
+#define packet_type_metadata 1
+
+#define TRUE 1
+#define FALSE 0
 
 typedef struct
 {
-  packet_type type;
+  char type;
   bool completed;
   int index;
-  size_t data_size;
+  int data_size;
   unsigned char data[1];
 } PACKET;
 
 typedef struct
 {
   int aru;
-  size_t nack_count;
+  int nack_count;
   int nacks[1];
 } FEEDBACK;
 
@@ -44,4 +49,6 @@ typedef struct
   PACKET *packet;
   int packetSize;
 } PACKET_INFO;
+
+#endif
 

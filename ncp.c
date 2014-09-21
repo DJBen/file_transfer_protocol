@@ -1,5 +1,6 @@
 #include "net_include.h"
 #include "queue.h"
+#include "message_dbg.h"
 
 int gethostname(char*,size_t);
 void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_rate_percent);
@@ -61,20 +62,24 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     FEEDBACK *currentFeedback = NULL;
     int feedbackSize;
     int latestPacketIndex;
+    int final_packet_index;
     PACKET_INFO *window;
     int aru;
-    int window_index_currently_sent;
     queue *nacks;
     PACKET_INFO temp_info;
+    bool file_finished_reading;
+    int sent_info;
+    int makeup_index;
 
+    file_finished_reading = false;
     nacks = malloc(sizeof(queue));
     init_queue(nacks);
     window = calloc(WINDOW_SIZE, sizeof(PACKET_INFO));
-    aru = 0;
-    window_index_currently_sent = 0;
+    aru = -1;
 
     temp_buf = malloc(sizeof(unsigned char) * BUF_SIZE);
     latestPacketIndex = 0;
+    final_packet_index = INT_MAX;
 
     sr = socket(AF_INET, SOCK_DGRAM, 0);  /* socket for receiving (udp) */
     if (sr<0) {
@@ -116,15 +121,43 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     FD_ZERO( &dummy_mask );
     FD_SET( sr, &mask );
 
-    /* Send metadata packet first. */
-    packetSize = sizeof(PACKET) + sizeof(char) * NAME_LENGTH;
-    currentPacket = malloc(packetSize);
-    currentPacket->type = packet_type_metadata;
-    currentPacket->completed = false;
-    currentPacket->index = -1;
-    strcpy(currentPacket->data, dest_file_name);
-    currentPacket->data_size = sizeof(char) * strlen(dest_file_name);
-    sendto(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
+    for (;;)
+    {
+        /* Send metadata packet first. */
+        packetSize = sizeof(PACKET) + sizeof(char) * NAME_LENGTH;
+        currentPacket = malloc(packetSize);
+        currentPacket->type = packet_type_metadata;
+        currentPacket->completed = false;
+        currentPacket->index = -1;
+        strcpy(currentPacket->data, dest_file_name);
+        currentPacket->data_size = sizeof(char) * strlen(dest_file_name);
+        sendto_dbg(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+
+        temp_mask = mask;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 2;
+        num = select( FD_SETSIZE, &temp_mask, &dummy_mask, &dummy_mask, &timeout);
+        if (num > 0) {
+            if ( FD_ISSET( sr, &temp_mask) ) {
+                from_len = sizeof(from_addr);
+                if (currentFeedback) free(currentFeedback);
+                currentFeedback = calloc(1, sizeof(FEEDBACK) + sizeof(int) * WINDOW_SIZE);
+                feedbackSize = recvfrom_dbg( sr, currentFeedback, sizeof(currentFeedback) + sizeof(int) * WINDOW_SIZE, 0, (struct sockaddr *)&from_addr, &from_len, loss_rate_percent);
+                if (feedbackSize == -1) continue;
+                from_ip = from_addr.sin_addr.s_addr;
+                if (currentFeedback->aru == -1) {
+                    /* Metadata feedback: ready for transmission */
+                    /* Open the source file for reading */
+                    if((fr = fopen(file_name, "rb")) == NULL) {
+                      perror("fopen");
+                      exit(0);
+                    }
+                    printf("Metadata acknowledgement received.\n");
+                    break;
+                }
+            }
+        }
+    }
 
     for(;;)
     {
@@ -137,43 +170,66 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
                 from_len = sizeof(from_addr);
                 if (currentFeedback) free(currentFeedback);
                 currentFeedback = calloc(1, sizeof(FEEDBACK) + sizeof(int) * WINDOW_SIZE);
-                feedbackSize = recvfrom( sr, currentFeedback, sizeof(currentFeedback) + sizeof(int) * WINDOW_SIZE, 0, (struct sockaddr *)&from_addr, &from_len);
+                feedbackSize = recvfrom_dbg( sr, currentFeedback, sizeof(currentFeedback) + sizeof(int) * WINDOW_SIZE, 0, (struct sockaddr *)&from_addr, &from_len, loss_rate_percent);
+                /* If failed, just loop */
+                if (feedbackSize == -1) continue;
                 from_ip = from_addr.sin_addr.s_addr;
-                printf( "Received from %d.%d.%d.%d: ARU = %d\n",
+                /* printf( "Received from %d.%d.%d.%d: ",
                 (htonl(from_ip) & 0xff000000)>>24,
                 (htonl(from_ip) & 0x00ff0000)>>16,
                 (htonl(from_ip) & 0x0000ff00)>>8,
-                (htonl(from_ip) & 0x000000ff), currentFeedback->aru);
+                (htonl(from_ip) & 0x000000ff)); */
 
                 if (currentFeedback->aru == -1) {
-                    /* Metadata feedback: ready for transmission */
-                    /* Open the source file for reading */
-                    if((fr = fopen(file_name, "rb")) == NULL) {
-                      perror("fopen");
-                      exit(0);
-                    }
-                    printf("Metadata sent.\n");
+                    /* printf("Metadata received at normal session: ignore.\n"); */
                 } else {
                     readFeedback(currentFeedback, nacks, &aru);
-                    printf("Nacks: %d\n", nacks->count);
+                    /* printf("ARU = %d, #NACK = %d\n", aru, nacks->count); */
                 }
             }
         }
-        if (fr == NULL) continue;
-        /* If sending too fast, rest for a while */
-        if (latestPacketIndex - aru + 1 >= WINDOW_SIZE) continue;
 
         if (nacks->count > 0) {
             /* Send missing packets first */
-            temp_info = window[dequeue(nacks) % WINDOW_SIZE];
-            sendto(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
+            while (nacks->count > 0) {
+                makeup_index = dequeue(nacks);
+                temp_info = window[makeup_index % WINDOW_SIZE];
+                sent_info = sendto_dbg(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+                if (sent_info == -1) {
+                    /* printf("Make up packet %d fails.\n", makeup_index); */
+                }
+            }
         } else {
+
+            /* If no nacks and file finished reading: complete transmission */
+            if (file_finished_reading) {
+                if (aru >= final_packet_index) {
+                    printf("File transmission completed.\n");
+                    break;
+                } else {
+                    /* Recipient neither receives all packets nor reports any nacks. */
+                    /* printf("NN aru = %d, final_packet_index = %d, latestPacketIndex = %d\n", aru, final_packet_index, latestPacketIndex); */
+                    temp_info = window[(latestPacketIndex - 1) % WINDOW_SIZE];
+                    sendto_dbg(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+                    continue;
+                }
+            }
+
+            /* If sending too fast, rest for a while: stop going forward */
+            if (latestPacketIndex - aru + 1 >= WINDOW_SIZE) {
+                /* printf("Sending too fast... aru = %d, latestPacketIndex = %d\n", aru, latestPacketIndex); */
+                temp_info = window[(latestPacketIndex - 1) % WINDOW_SIZE];
+                sendto_dbg(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+                continue;
+            }
+
+            /* We read file and construct the packet */
             nread = fread(temp_buf, sizeof(unsigned char), BUF_SIZE, fr);
             packetSize = sizeof(PACKET) + nread * sizeof(unsigned char);
             currentPacket = malloc(packetSize);
             currentPacket->type = packet_type_normal;
             currentPacket->completed = nread < BUF_SIZE && feof(fr); /* EOF: true, otherwise false */
-            currentPacket->index = latestPacketIndex++;
+            currentPacket->index = latestPacketIndex;
             currentPacket->data_size = nread;
             memcpy(currentPacket->data, temp_buf, nread * sizeof(unsigned char));
             /*
@@ -195,14 +251,17 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
                 /* Did we reach the EOF? */
                 printf("Finished reading.\n");
                 fclose(fr);
-                sendto(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
-                break;
+                sendto_dbg(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+                file_finished_reading = true;
+                final_packet_index = latestPacketIndex;
+                /* printf("Final packet index %d\n", final_packet_index); */
             } else if (nread < BUF_SIZE && !feof(fr)) {
                 printf("fread error.\n");
                 exit(0);
             } else {
-                sendto(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
+                sendto_dbg(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
             }
+            latestPacketIndex++;
         }
     }
 }
@@ -212,6 +271,8 @@ void readFeedback(FEEDBACK *feedback, queue *nacks, int *aru) {
     int i;
     *aru = feedback->aru;
     for (i = 0; i < feedback->nack_count; i++) {
-      enqueue(nacks, (int)*(feedback->nacks + i));
+        if (queueContains(nacks, (int)*(feedback->nacks + i)) == 0) {
+            enqueue(nacks, (int)*(feedback->nacks + i));
+        }
     }
 }

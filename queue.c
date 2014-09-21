@@ -29,7 +29,6 @@ http://www.amazon.com/exec/obidos/ASIN/0387001638/thealgorithmrepo/
 
 
 #include "queue.h"
-#include <stdbool.h>
 
 void init_queue(queue *q)
 {
@@ -63,28 +62,40 @@ int dequeue(queue *q)
         return(x);
 }
 
-int empty(queue *q)
+bool empty(queue *q)
 {
         if (q->count <= 0) {
-                return (true);
+                return TRUE;
         } else {
-                return (false);
+                return FALSE;
         }
 }
 
 void print_queue(queue *q)
 {
-        int i,j;
-
+        int i;
+        if (q->count == 0) return;
+        printf("queue (%d elements): ", q->count);
         i=q->first;
-
         while (i != q->last) {
-                printf("%c ",q->q[i]);
+                printf("%d ",q->q[i]);
                 i = (i+1) % QUEUESIZE;
         }
-
-        printf("%2d ",q->q[i]);
+        printf("%d ",q->q[i]);
         printf("\n");
 }
 
+int queueContains(queue *q, int element) {
+        int i;
+        if (q->count == 0) return FALSE;
+        i = q->first;
+        while (i != q->last) {
+                if (q->q[i] == element) {
+                        return TRUE;
+                }
+                i = (i + 1) % QUEUESIZE;
+        }
+        if (q->q[i] == element) return TRUE;
+        return FALSE;
+}
 

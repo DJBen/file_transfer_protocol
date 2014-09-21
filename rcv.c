@@ -1,8 +1,9 @@
 #include "net_include.h"
+#include "message_dbg.h"
 
 void receiveFile(int loss_rate_percent);
-
 int setFeedback(FEEDBACK **feedback, int aru, int* nacks, int nack_count);
+void dump_nacks(int *nacks, int nack_count);
 
 int main(int argc, char const *argv[])
 {
@@ -11,21 +12,16 @@ int main(int argc, char const *argv[])
     printf("Usage: rcv <loss_rate_percent>\n");
     return 1;
   }
-  loss_rate_percent = (int)strtol(argv[0], (char **)NULL, 10);
+  loss_rate_percent = (int)strtol(argv[1], (char **)NULL, 10);
   receiveFile(loss_rate_percent);
   return 0;
 }
 
 void receiveFile(int loss_rate_percent) {
     struct sockaddr_in    name;
-    struct sockaddr_in    send_addr;
     struct sockaddr_in    from_addr;
     socklen_t             from_len;
-    struct hostent        h_ent;
-    struct hostent        *p_h_ent;
     char                  dest_file_name[NAME_LENGTH] = {'\0'};
-    char                  my_name[NAME_LENGTH] = {'\0'};
-    int                   host_num;
     int                   from_ip;
     int                   ss,sr;
     fd_set                mask;
@@ -36,7 +32,7 @@ void receiveFile(int loss_rate_percent) {
 
     /* Files and packets */
     int nwritten;
-    FILE *fw;
+    FILE *fw = NULL;
     int packetSize;
     int feedbackSize;
     int i;
@@ -48,10 +44,13 @@ void receiveFile(int loss_rate_percent) {
     int temp_nacks[WINDOW_SIZE];
     int temp_nack_size;
     int new_aru;
+    int largest_packet_index;
     bool completed;
 
+    largest_packet_index = -1;
     window = calloc(WINDOW_SIZE, sizeof(PACKET *));
     aru = -1;
+    completed = false;
 
     sr = socket(AF_INET, SOCK_DGRAM, 0);  /* socket for receiving (udp) */
     if (sr<0) {
@@ -83,17 +82,18 @@ void receiveFile(int loss_rate_percent) {
                 from_len = sizeof(from_addr);
                 packetSize = sizeof(PACKET) + sizeof(char) * BUF_SIZE;
                 currentPacket = malloc(packetSize);
-                bytes = recvfrom(sr, currentPacket, packetSize, 0,
+                bytes = recvfrom_dbg(sr, currentPacket, packetSize, 0,
                           (struct sockaddr *)&from_addr,
-                          &from_len);
+                          &from_len, loss_rate_percent);
+                if (bytes == -1) continue;
                 from_ip = from_addr.sin_addr.s_addr;
 
-                printf( "Received from (%d.%d.%d.%d): length %d\n",
+                /* printf( "Received from (%d.%d.%d.%d): length %d\n",
                 (htonl(from_ip) & 0xff000000)>>24,
                 (htonl(from_ip) & 0x00ff0000)>>16,
                 (htonl(from_ip) & 0x0000ff00)>>8,
                 (htonl(from_ip) & 0x000000ff),
-                bytes);
+                bytes); */
 
                 if (currentPacket->type == packet_type_metadata) {
                     /* If current packet is metadata packet (contains host name),
@@ -113,26 +113,40 @@ void receiveFile(int loss_rate_percent) {
                     feedbackSize = setFeedback(&currentFeedback, -1, NULL, 0);
 
                     from_addr.sin_port = htons(PORT);
-                    send_result = sendto(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr));
-                    if (send_result == -1) {
-                        printf("send metadata feedback error\n");
-                        exit(1);
-                    }
+
+                    do {
+                        send_result = sendto_dbg(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr), loss_rate_percent);
+                        if (send_result == -1) {
+                            printf("Send metadata feedback error\n");
+                        }
+                    } while (send_result == -1);
 
                     /* Open or create the destination file for writing */
+                    /* Already opened: skip this step */
+                    if (fw != NULL) continue;
                     if((fw = fopen(dest_file_name, "wb")) == NULL) {
                         perror("fopen");
                         exit(0);
                     }
+
                 } else if (currentPacket->type == packet_type_normal) {
                     if (fw == NULL) {
                         printf("Write stream not open caused by missing metadata packet.\n");
                         exit(0);
                     }
-                    printf("Packet %d received of size %ld.\n", currentPacket->index, currentPacket->data_size);
+                    printf("Packet %d received of size %d.\n", currentPacket->index, currentPacket->data_size);
 
-                    /* Save packet to buffer, waiting for write operation */
-                    window[currentPacket->index % WINDOW_SIZE] = currentPacket;
+                    /* Packet too old, discard */
+                    if (abs(aru - currentPacket->index) > WINDOW_SIZE) continue;
+
+                    if (largest_packet_index < currentPacket->index) {
+                        largest_packet_index = currentPacket->index;
+                    }
+
+                    if (aru < currentPacket->index) {
+                        /* Save packet to buffer, waiting for write operation */
+                        window[currentPacket->index % WINDOW_SIZE] = currentPacket;
+                    }
 
                     /* Increment new aru */
                     new_aru = aru;
@@ -140,20 +154,25 @@ void receiveFile(int loss_rate_percent) {
                         if (window[i % WINDOW_SIZE] == NULL) break;
                         new_aru++;
                     }
+                    /* printf("old aru: %d, new aru: %d\n", aru, new_aru); */
 
                     /* Construct nacks */
                     temp_nack_size = 0;
-                    for (i = new_aru + 1; i <= currentPacket->index; i++) {
+                    for (i = new_aru + 1; i <= largest_packet_index; i++) {
                         if (window[i % WINDOW_SIZE] == NULL) {
                             temp_nacks[temp_nack_size++] = i;
                         }
                     }
+                    /* dump_nacks(temp_nacks, temp_nack_size); */
 
                     /* Send feedback */
                     feedbackSize = setFeedback(&currentFeedback, new_aru, temp_nacks, temp_nack_size);
                     from_addr.sin_port = htons(PORT);
-                    sendto(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr));
-                    completed = currentPacket->completed;
+                    do
+                    {
+                        send_result = sendto_dbg(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr), loss_rate_percent);
+                    } while (send_result == -1);
+                    completed = completed || currentPacket->completed;
 
                     /* Write packets up to new ARU to the disk and free these in the buffer */
                     for (i = aru + 1; i <= new_aru; i++) {
@@ -167,9 +186,10 @@ void receiveFile(int loss_rate_percent) {
                     }
                     aru = new_aru;
 
-                    if (completed) {
+                    if (completed && temp_nack_size == 0) {
                         fclose(fw);
-                        printf("File transfer completed.\n");
+                        fw = NULL;
+                        printf("File transmission completed.\n");
                         break;
                     }
                 }
@@ -195,4 +215,12 @@ int setFeedback(FEEDBACK **feedback, int aru, int *nacks, int nack_count) {
     return feedbackSize;
 }
 
+void dump_nacks(int *nacks, int nack_count) {
+    int i;
+    printf("nack_dump (%d): ", nack_count);
+    for (i = 0; i < nack_count; i++) {
+        printf("%d ", nacks[i]);
+    }
+    printf("\n");
+}
 
