@@ -1,5 +1,6 @@
 #include "net_include.h"
-#include "message_dbg.h"
+#include "sendto_dbg.h"
+#include <time.h>
 
 void receiveFile(int loss_rate_percent);
 int setFeedback(FEEDBACK **feedback, int aru, int* nacks, int nack_count);
@@ -13,6 +14,7 @@ int main(int argc, char const *argv[])
     return 1;
   }
   loss_rate_percent = (int)strtol(argv[1], (char **)NULL, 10);
+  sendto_dbg_init(loss_rate_percent);
   receiveFile(loss_rate_percent);
   return 0;
 }
@@ -46,6 +48,16 @@ void receiveFile(int loss_rate_percent) {
     int new_aru;
     int largest_packet_index;
     bool completed;
+
+    /* Timing */
+    clock_t begin,end;
+    double time_spent;
+    int packetsPer50M;
+    int numberOf50M;
+
+    begin= clock();
+    packetsPer50M = 50 * 1024 * 1024 / BUF_SIZE;
+    numberOf50M = 1;
 
     largest_packet_index = -1;
     window = calloc(WINDOW_SIZE, sizeof(PACKET *));
@@ -82,9 +94,9 @@ void receiveFile(int loss_rate_percent) {
                 from_len = sizeof(from_addr);
                 packetSize = sizeof(PACKET) + sizeof(char) * BUF_SIZE;
                 currentPacket = malloc(packetSize);
-                bytes = recvfrom_dbg(sr, currentPacket, packetSize, 0,
+                bytes = recvfrom(sr, currentPacket, packetSize, 0,
                           (struct sockaddr *)&from_addr,
-                          &from_len, loss_rate_percent);
+                          &from_len);
                 if (bytes == -1) continue;
                 from_ip = from_addr.sin_addr.s_addr;
 
@@ -100,7 +112,7 @@ void receiveFile(int loss_rate_percent) {
                      * we set up the sending socket with the host name.
                      */
                     strcpy(dest_file_name, (char *)currentPacket->data);
-                    printf("%s\n", dest_file_name);
+                    /* printf("%s\n", dest_file_name); */
 
                     /* socket for sending (udp) */
                     ss = socket(AF_INET, SOCK_DGRAM, 0);
@@ -115,7 +127,7 @@ void receiveFile(int loss_rate_percent) {
                     from_addr.sin_port = htons(PORT);
 
                     do {
-                        send_result = sendto_dbg(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr), loss_rate_percent);
+                        send_result = sendto_dbg(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr));
                         if (send_result == -1) {
                             printf("Send metadata feedback error\n");
                         }
@@ -134,7 +146,10 @@ void receiveFile(int loss_rate_percent) {
                         printf("Write stream not open caused by missing metadata packet.\n");
                         exit(0);
                     }
-                    printf("Packet %d received of size %d.\n", currentPacket->index, currentPacket->data_size);
+                    if (currentPacket->index % 100 == 0) {
+                        printf("Packet %d received of size %d.\n", currentPacket->index, currentPacket->data_size);
+                    }
+                    /* printf("Packet %d received of size %d.\n", currentPacket->index, currentPacket->data_size); */
 
                     /* Packet too old, discard */
                     if (abs(aru - currentPacket->index) > WINDOW_SIZE) continue;
@@ -156,6 +171,15 @@ void receiveFile(int loss_rate_percent) {
                     }
                     /* printf("old aru: %d, new aru: %d\n", aru, new_aru); */
 
+                    /* Print timing */
+                    if (new_aru >= packetsPer50M*numberOf50M){
+                        printf("%d%s\n",numberOf50M*50," Mb of file received.");
+                        end = clock();
+                        time_spent = (double)(end - begin)/ CLOCKS_PER_SEC;
+                        printf("%s%f%s\n","Data Trasfer Speed: ",1400*new_aru/time_spent/1000000," Mb/s");
+                        numberOf50M++;
+                    }
+
                     /* Construct nacks */
                     temp_nack_size = 0;
                     for (i = new_aru + 1; i <= largest_packet_index; i++) {
@@ -170,7 +194,7 @@ void receiveFile(int loss_rate_percent) {
                     from_addr.sin_port = htons(PORT);
                     do
                     {
-                        send_result = sendto_dbg(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr), loss_rate_percent);
+                        send_result = sendto_dbg(ss, currentFeedback, feedbackSize, 0, (struct sockaddr *)&from_addr, sizeof(from_addr));
                     } while (send_result == -1);
                     completed = completed || currentPacket->completed;
 
@@ -190,6 +214,9 @@ void receiveFile(int loss_rate_percent) {
                         fclose(fw);
                         fw = NULL;
                         printf("File transmission completed.\n");
+                        end = clock();
+                        time_spent = (double)(end-begin)/CLOCKS_PER_SEC;
+                        printf("%s%f%s\n","Data Transfer Speed: ",1400*largest_packet_index/1000000/time_spent," Mb/s");
                         break;
                     }
                 }

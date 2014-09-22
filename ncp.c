@@ -1,6 +1,9 @@
 #include "net_include.h"
 #include "queue.h"
-#include "message_dbg.h"
+#include "sendto_dbg.h"
+#include <time.h>
+
+#define TIME_OUT_ITERATIONS_LIMIT 1500
 
 int gethostname(char*,size_t);
 void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_rate_percent);
@@ -30,6 +33,7 @@ int main(int argc, char const *argv[])
   strcpy(dest_file_name, argv[3]);
   strcpy(comp_name, find_at_symbol_ptr + 1);
 
+  sendto_dbg_init(loss_rate_percent);
   sendFile(source_file_name, dest_file_name, comp_name, loss_rate_percent);
 
   return 0;
@@ -70,7 +74,19 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     bool file_finished_reading;
     int sent_info;
     int makeup_index;
+    int time_out_iterations;
 
+    /* Timing */
+    clock_t begin,end;
+    double time_spent;
+    int packetsPer50M;
+    int numberOf50M;
+
+    begin= clock();
+    packetsPer50M = 50 * 1024 * 1024 / BUF_SIZE;
+    numberOf50M = 1;
+
+    time_out_iterations = 0;
     file_finished_reading = false;
     nacks = malloc(sizeof(queue));
     init_queue(nacks);
@@ -131,7 +147,7 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
         currentPacket->index = -1;
         strcpy(currentPacket->data, dest_file_name);
         currentPacket->data_size = sizeof(char) * strlen(dest_file_name);
-        sendto_dbg(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+        sendto_dbg(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
 
         temp_mask = mask;
         timeout.tv_sec = 0;
@@ -142,7 +158,7 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
                 from_len = sizeof(from_addr);
                 if (currentFeedback) free(currentFeedback);
                 currentFeedback = calloc(1, sizeof(FEEDBACK) + sizeof(int) * WINDOW_SIZE);
-                feedbackSize = recvfrom_dbg( sr, currentFeedback, sizeof(currentFeedback) + sizeof(int) * WINDOW_SIZE, 0, (struct sockaddr *)&from_addr, &from_len, loss_rate_percent);
+                feedbackSize = recvfrom( sr, currentFeedback, sizeof(currentFeedback) + sizeof(int) * WINDOW_SIZE, 0, (struct sockaddr *)&from_addr, &from_len);
                 if (feedbackSize == -1) continue;
                 from_ip = from_addr.sin_addr.s_addr;
                 if (currentFeedback->aru == -1) {
@@ -170,11 +186,11 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
                 from_len = sizeof(from_addr);
                 if (currentFeedback) free(currentFeedback);
                 currentFeedback = calloc(1, sizeof(FEEDBACK) + sizeof(int) * WINDOW_SIZE);
-                feedbackSize = recvfrom_dbg( sr, currentFeedback, sizeof(currentFeedback) + sizeof(int) * WINDOW_SIZE, 0, (struct sockaddr *)&from_addr, &from_len, loss_rate_percent);
+                feedbackSize = recvfrom( sr, currentFeedback, sizeof(currentFeedback) + sizeof(int) * WINDOW_SIZE, 0, (struct sockaddr *)&from_addr, &from_len);
                 /* If failed, just loop */
                 if (feedbackSize == -1) continue;
-                from_ip = from_addr.sin_addr.s_addr;
-                /* printf( "Received from %d.%d.%d.%d: ",
+                /* from_ip = from_addr.sin_addr.s_addr;
+                printf( "Received from %d.%d.%d.%d: ",
                 (htonl(from_ip) & 0xff000000)>>24,
                 (htonl(from_ip) & 0x00ff0000)>>16,
                 (htonl(from_ip) & 0x0000ff00)>>8,
@@ -194,7 +210,7 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
             while (nacks->count > 0) {
                 makeup_index = dequeue(nacks);
                 temp_info = window[makeup_index % WINDOW_SIZE];
-                sent_info = sendto_dbg(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+                sent_info = sendto_dbg(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
                 if (sent_info == -1) {
                     /* printf("Make up packet %d fails.\n", makeup_index); */
                 }
@@ -205,21 +221,27 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
             if (file_finished_reading) {
                 if (aru >= final_packet_index) {
                     printf("File transmission completed.\n");
+                    end = clock();
+                    time_spent = (double)(end-begin)/CLOCKS_PER_SEC;
+                    printf("%s%f%s\n","Data Transfer Speed: ",1400*(latestPacketIndex - 1)/1000000/time_spent," Mb/s");
                     break;
                 } else {
                     /* Recipient neither receives all packets nor reports any nacks. */
                     /* printf("NN aru = %d, final_packet_index = %d, latestPacketIndex = %d\n", aru, final_packet_index, latestPacketIndex); */
                     temp_info = window[(latestPacketIndex - 1) % WINDOW_SIZE];
-                    sendto_dbg(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+                    sendto_dbg(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
+                    if (++time_out_iterations >= TIME_OUT_ITERATIONS_LIMIT) break;
                     continue;
                 }
+            } else {
+                time_out_iterations = 0;
             }
 
             /* If sending too fast, rest for a while: stop going forward */
             if (latestPacketIndex - aru + 1 >= WINDOW_SIZE) {
                 /* printf("Sending too fast... aru = %d, latestPacketIndex = %d\n", aru, latestPacketIndex); */
                 temp_info = window[(latestPacketIndex - 1) % WINDOW_SIZE];
-                sendto_dbg(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+                sendto_dbg(ss, temp_info.packet, temp_info.packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
                 continue;
             }
 
@@ -251,7 +273,7 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
                 /* Did we reach the EOF? */
                 printf("Finished reading.\n");
                 fclose(fr);
-                sendto_dbg(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+                sendto_dbg(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
                 file_finished_reading = true;
                 final_packet_index = latestPacketIndex;
                 /* printf("Final packet index %d\n", final_packet_index); */
@@ -259,8 +281,18 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
                 printf("fread error.\n");
                 exit(0);
             } else {
-                sendto_dbg(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr), loss_rate_percent);
+                sendto_dbg(ss, currentPacket, packetSize, 0, (struct sockaddr *)&send_addr, sizeof(send_addr));
             }
+
+            /* Print timing */
+            if (latestPacketIndex >= packetsPer50M*numberOf50M){
+                printf("%d%s\n",numberOf50M*50," Mb of file received.");
+                end = clock();
+                time_spent = (double)(end - begin)/ CLOCKS_PER_SEC;
+                printf("%s%f%s\n","Data Trasfer Speed: ",1400*latestPacketIndex/time_spent/1000000," Mb/s");
+                numberOf50M++;
+            }
+
             latestPacketIndex++;
         }
     }
