@@ -216,7 +216,7 @@ void receiveFile(int loss_rate_percent) {
                         printf("File transmission completed.\n");
                         end = clock();
                         time_spent = (double)(end-begin)/CLOCKS_PER_SEC;
-                        printf("%s%f%s\n","Data Transfer Speed: ",1400*largest_packet_index/1000000/time_spent," Mb/s");
+                        printf("%s%f%s\n","Average Data Transfer Speed: ",1400*largest_packet_index/1000000/time_spent," Mb/s");
                         break;
                     }
                 }

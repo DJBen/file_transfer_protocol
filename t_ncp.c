@@ -4,29 +4,26 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name);
 
 int main(int argc, char const *argv[])
 {
-  int loss_rate_percent;
   char source_file_name[NAME_LENGTH];
   char dest_file_name[NAME_LENGTH];
   char comp_name[NAME_LENGTH];
   char *find_at_symbol_ptr;
 
-  if (argc != 4) {
-    printf("Usage: t_ncp <loss_rate_percent> <source_file_name> <dest_file_name>@<comp_name>\n");
+  if (argc != 3) {
+    printf("Usage: t_ncp <source_file_name> <dest_file_name>@<comp_name>\n");
     return 1;
   }
-  loss_rate_percent = (int)strtol(argv[1], (char **)NULL, 10);
-  strcpy(source_file_name, argv[2]);
+  strcpy(source_file_name, argv[1]);
 
-  find_at_symbol_ptr = strchr(argv[3], '@');
+  find_at_symbol_ptr = strchr(argv[2], '@');
   if (find_at_symbol_ptr == NULL) {
-    printf("Usage: t_ncp <loss_rate_percent> <source_file_name> <dest_file_name>@<comp_name>\n");
+    printf("Usage: t_ncp <source_file_name> <dest_file_name>@<comp_name>\n");
     return 1;
   }
   *find_at_symbol_ptr = 0;
-  strcpy(dest_file_name, argv[3]);
+  strcpy(dest_file_name, argv[2]);
   strcpy(comp_name, find_at_symbol_ptr + 1);
 
-  sendto_dbg_init(loss_rate_percent);
   sendFile(source_file_name, dest_file_name, comp_name);
 
   return 0;
@@ -44,7 +41,12 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name)
     int                ret;
 
     PACKET *currentPacket;
-    int packetIndex;
+    int packetSize;
+    int latestPacketIndex = 0;
+    FILE *fr;
+    int nread = 0;
+    currentPacket = NULL;
+    unsigned char *temp_buf;
 
     s = socket(AF_INET, SOCK_STREAM, 0); /* Create a socket (TCP) */
     if (s<0) {
@@ -55,18 +57,8 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name)
     host.sin_family = AF_INET;
     host.sin_port   = htons(PORT);
 
-    printf("Enter the server name:\n");
-    if ( fgets(host_name,80,stdin) == NULL ) {
-        perror("net_client: Error reading server name.\n");
-        exit(1);
-    }
-    c = strchr(host_name,'\n'); /* remove new line */
-    if ( c ) *c = '\0';
-    c = strchr(host_name,'\r'); /* remove carriage return */
-    if ( c ) *c = '\0';
-    printf("Your server is %s\n",host_name);
+    p_h_ent = gethostbyname(comp_name);
 
-    p_h_ent = gethostbyname(host_name);
     if ( p_h_ent == NULL ) {
         printf("net_client: gethostbyname error.\n");
         exit(1);
@@ -83,34 +75,55 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name)
     }
 
     /* Send metadata packet first. */
-    packetSize = sizeof(PACKET) + sizeof(char) * NAME_LENGTH;
-    currentPacket = malloc(packetSize);
-    currentPacket->type = packet_type_metadata;
-    currentPacket->completed = false;
-    currentPacket->index = -1;
-    ret = send( s, mess_buf, mess_len, 0);
-    if(ret != mess_len)
+        packetSize = sizeof(PACKET) + sizeof(char) * NAME_LENGTH;
+        currentPacket = malloc(packetSize);
+        currentPacket->type = packet_type_metadata;
+        currentPacket->completed = false;
+        currentPacket->index = -1;
+        strcpy(currentPacket->data, dest_file_name);
+        currentPacket->data_size = sizeof(char) * strlen(dest_file_name);
+
+    ret = send( s, currentPacket, packetSize, 0);
+    if(ret != packetSize)
     {
-        perror( "Net_client: error in writing");
+        perror( "Net_client: error in writing metadata");
         exit(1);
+    }
+
+    if((fr = fopen(file_name, "rb")) == NULL) {
+        perror("fopen");
+        exit(0);
     }
 
     for(;;)
     {
-        printf("enter message: ");
-        scanf("%s",neto_mess_ptr);
-        mess_len = strlen(neto_mess_ptr) + sizeof(mess_len);
-        memcpy( mess_buf, &mess_len, sizeof(mess_len) );
+            /* We read file and construct the packet */
+            temp_buf = malloc(sizeof(unsigned char) * BUF_SIZE);
+            nread = fread(temp_buf, sizeof(unsigned char), BUF_SIZE, fr);
+            packetSize = sizeof(PACKET) + nread * sizeof(unsigned char);
+            if (currentPacket != NULL) free(currentPacket);
+            currentPacket = malloc(packetSize);
+            currentPacket->type = packet_type_normal;
+            currentPacket->completed = nread < BUF_SIZE && feof(fr); /* EOF: true, otherwise false */
+            currentPacket->index = latestPacketIndex++;
+            currentPacket->data_size = nread;
+            memcpy(currentPacket->data, temp_buf, nread * sizeof(unsigned char));
+            free(temp_buf);
 
-        ret = send( s, mess_buf, mess_len, 0);
-        if(ret != mess_len)
+        ret = send( s, currentPacket, packetSize, 0);
+        if(ret != packetSize)
         {
             perror( "Net_client: error in writing");
             exit(1);
         }
-    }
 
-    return 0;
+            if (nread < BUF_SIZE && feof(fr)) {
+                free(currentPacket);
+                fclose(fr);
+                break;
+            }
+
+    }
 
 }
 

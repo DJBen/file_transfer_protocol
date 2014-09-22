@@ -2,7 +2,7 @@ CC=gcc
 
 CFLAGS = -ansi -c -Wall -pedantic
 
-all: ucast net_client net_server myip file_copy ncp rcv
+all: ucast net_client net_server myip file_copy ncp rcv t_ncp t_rcv
 
 rcv: rcv.o sendto_dbg.o
 			$(CC) -o rcv rcv.o sendto_dbg.o
@@ -25,6 +25,12 @@ myip: myip.o
 file_copy: file_copy.o
 	    $(CC) -o file_copy file_copy.o
 
+t_ncp: t_ncp.o
+			$(CC) -o t_ncp t_ncp.o
+
+t_rcv: t_rcv.o
+			$(CC) -o t_rcv t_rcv.o
+
 clean:
 	rm *.o
 	rm net_server
@@ -34,6 +40,8 @@ clean:
 	rm file_copy
 	rm ncp
 	rm rcv
+	rm t_rcv
+	rm t_ncp
 
 %.o:    %.c
 	$(CC) $(CFLAGS) $*.c

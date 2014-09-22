@@ -93,7 +93,6 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
     window = calloc(WINDOW_SIZE, sizeof(PACKET_INFO));
     aru = -1;
 
-    temp_buf = malloc(sizeof(unsigned char) * BUF_SIZE);
     latestPacketIndex = 0;
     final_packet_index = INT_MAX;
 
@@ -246,6 +245,7 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
             }
 
             /* We read file and construct the packet */
+            temp_buf = malloc(sizeof(unsigned char) * BUF_SIZE);
             nread = fread(temp_buf, sizeof(unsigned char), BUF_SIZE, fr);
             packetSize = sizeof(PACKET) + nread * sizeof(unsigned char);
             currentPacket = malloc(packetSize);
@@ -254,6 +254,8 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
             currentPacket->index = latestPacketIndex;
             currentPacket->data_size = nread;
             memcpy(currentPacket->data, temp_buf, nread * sizeof(unsigned char));
+            free(temp_buf);
+
             /*
              * Move buffer forward and clearing the previous packet buffer
              * from last time window.
@@ -289,7 +291,7 @@ void sendFile(char *file_name, char *dest_file_name, char *comp_name, int loss_r
                 printf("%d%s\n",numberOf50M*50," Mb of file received.");
                 end = clock();
                 time_spent = (double)(end - begin)/ CLOCKS_PER_SEC;
-                printf("%s%f%s\n","Data Trasfer Speed: ",1400*latestPacketIndex/time_spent/1000000," Mb/s");
+                printf("%s%f%s\n","Average Data Trasfer Speed: ",1400*latestPacketIndex/time_spent/1000000," Mb/s");
                 numberOf50M++;
             }
 
